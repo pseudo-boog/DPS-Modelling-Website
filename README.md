@@ -43,6 +43,11 @@ It is a static site: serve this folder from any web server (GitHub Pages here), 
 `python3 -m http.server` and open http://localhost:8000. No build step; `copasi-opt.wasm` is prebuilt
 (rebuild instructions in `copasi-wasm/README.md`).
 
+## Updating the live site
+GitHub Pages serves the `gh-pages` branch. After committing to `main`, publish with
+`git push origin main main:gh-pages` (or switch **Settings → Pages** to serve `main` and delete `gh-pages`).
+The page loads in about a minute after a push; visitors may need a reload to get the new version.
+
 ## License
 MIT for the web app (see `LICENSE`, which also credits the original RE-ADD Modeler by Finn Bork). COPASI code:
 Artistic License 2.0 (PRAXIS routines: LGPL). Bundled libraries in `vendor/`: htm/Preact, plotly.js, JSZip.
