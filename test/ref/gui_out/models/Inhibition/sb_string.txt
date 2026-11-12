@@ -1,0 +1,53 @@
+J1: A + cat -> cat1;		k1*A*cat-kN1*cat1
+J2: cat1 + B -> cat2;		k2*cat1*B-kN2*cat2
+J3: cat2 -> P + cat;		k3*cat2-kN3*P*cat
+J4: B + cat -> catI;		k4*B*cat-kN4*catI
+
+
+A = 0
+B = 0
+P = 0
+cat = 0
+cat1 = 0
+cat2 = 0
+catI = 0
+
+
+k1 = 0
+$kN1 = 0
+k2 = 0
+$kN2 = 0
+k3 = 0
+$kN3 = 0
+k4 = 0
+kN4 = 0
+
+event_1 = 0
+
+rct_vol1 = 30.0
+add_vol1 = 0.5
+new_vol1 = rct_vol1 + add_vol1
+ratio1 = rct_vol1/new_vol1
+A_added_mmol_1 = 1.5
+at(time>=60) && (event_1==1):
+	A=(A*rct_vol1 + A_added_mmol_1)/new_vol1,
+	B=B*ratio1,
+	P=P*ratio1,
+	cat=cat*ratio1,
+	cat1=cat1*ratio1,
+	cat2=cat2*ratio1,
+	catI=catI*ratio1
+rct_vol2 = 30.5
+add_vol2 = 0.8
+new_vol2 = rct_vol2 + add_vol2
+ratio2 = rct_vol2/new_vol2
+cat_added_mmol_2 = 0.06
+A_added_mmol_2 = 1.0
+at(time>=111) && (event_1==1):
+	A=(A*rct_vol2 + A_added_mmol_2)/new_vol2,
+	B=B*ratio2,
+	P=P*ratio2,
+	cat=(cat*rct_vol2 + cat_added_mmol_2)/new_vol2,
+	cat1=cat1*ratio2,
+	cat2=cat2*ratio2,
+	catI=catI*ratio2

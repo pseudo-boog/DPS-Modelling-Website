@@ -1,0 +1,27 @@
+[
+  [
+    {
+      "species": "A",
+      "rct_volume_ml": 30.0,
+      "added_vol_ml": 0.5,
+      "mmol": 1.5,
+      "time_re_add": "60"
+    }
+  ],
+  [
+    {
+      "species": "cat",
+      "rct_volume_ml": 30.5,
+      "added_vol_ml": 0.3,
+      "mmol": 0.06,
+      "time_re_add": "111"
+    },
+    {
+      "species": "A",
+      "rct_volume_ml": 30.5,
+      "added_vol_ml": 0.5,
+      "mmol": 1.0,
+      "time_re_add": "111"
+    }
+  ]
+]

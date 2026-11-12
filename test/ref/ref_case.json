@@ -1,0 +1,12 @@
+{
+  "files": ["exp1.csv", "exp2.csv"],
+  "additions": {"exp1.csv": "exp1_re_add.json"},
+  "mechanisms": [
+    {"name": "base", "reactions": ["A + cat -> cat1", "cat1 + B -> cat2", "cat2 -> P + cat"],
+     "k": {"kN1": "$0", "kN2": "$0", "kN3": "$0"}},
+    {"name": "Inhibition", "reactions": ["A + cat -> cat1", "cat1 + B -> cat2", "cat2 -> P + cat", "B + cat -> catI"],
+     "k": {"kN1": "$0", "kN2": "$0", "kN3": "$0"}}
+  ],
+  "generations": 30,
+  "population": 30
+}
