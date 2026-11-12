@@ -1,6 +1,6 @@
 # RE-ADD Modeler (web)
 
-**Open it: https://pseudo-boog.github.io/re-add-modeler-web/** (nothing to install)
+**Open it: https://pseudo-boog.github.io/DPS-Modelling-Website/** (nothing to install)
 
 A browser version of the [RE-ADD Modeler](https://gitlab.com/heingroup/re_add_modeler) desktop app:
 fit kinetic mechanisms to reaction time courses that include re-additions (species added part-way through a run),

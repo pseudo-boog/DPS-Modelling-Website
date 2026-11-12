@@ -6,7 +6,7 @@ import { runJob } from "./runner.js";
 
 const { html, render, useState, useEffect, useRef, useMemo, useCallback } = window.htmPreact;
 /** Where this site's source code lives. */
-const SOURCE_URL = "https://github.com/pseudo-boog/re-add-modeler-web";
+const SOURCE_URL = "https://github.com/pseudo-boog/DPS-Modelling-Website";
 const Plotly = window.Plotly;
 const JSZip = window.JSZip;
 
