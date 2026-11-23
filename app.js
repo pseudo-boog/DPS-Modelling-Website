@@ -70,7 +70,7 @@ function newSession() {
     files: [], selectedFile: null, additions: [], mechanisms: [], fits: {},
     settings: { ...DEFAULT_SETTINGS }, toMatch: null, trainOff: [],
     editor: { name: "base", rows: emptyRows() },
-    results: { model: null, file: null, errorPct: "2", sigma: "0.1", plotOff: [], statOff: [] },
+    results: { model: null, file: null, errorPct: "2", sigma: "0.1", bicSigma: "", plotOff: [], statOff: [] },
     plotOff: [], example: false, stamp: timeStamp(),
   };
 }
@@ -184,7 +184,7 @@ function deserialize(text) {
   S.trainOff = plain(o.trainOff || []);
   S.editor = plain(o.editor || S.editor);
   S.results = { ...S.results, ...plain(o.results || {}) };
-  S.results.errorPct = String(S.results.errorPct); S.results.sigma = String(S.results.sigma);
+  S.results.errorPct = String(S.results.errorPct); S.results.sigma = String(S.results.sigma); S.results.bicSigma = String(S.results.bicSigma ?? "");
   S.plotOff = plain(o.plotOff || []);
   return S;
 }
@@ -242,6 +242,7 @@ async function buildSessionZip(S, resultsInfo) {
     for (const [name, curve] of Object.entries(resultsInfo.curves)) res.file(`${name}_data.csv`, curveCsv(curve));
     if (resultsInfo.errors) res.file("errors.json", JSON.stringify(resultsInfo.errors, null, 4));
     if (resultsInfo.ftests) res.file("F_tests.json", JSON.stringify(resultsInfo.ftests, null, 4));
+    if (resultsInfo.modelSelection) res.file("model_selection.json", JSON.stringify(resultsInfo.modelSelection, null, 4));
   }
   root.file("web_session.json", serialize(S));
   return { blob: await zip.generateAsync({ type: "blob", compression: "DEFLATE" }), name: `re-add-session_${stamp}.zip` };
@@ -866,7 +867,7 @@ function RunProgress({ run, onCancel }) {
 // ---- Results tab --------------------------------------------------------------
 
 function useResults(S) {
-  const deps = S ? [S.files, S.additions, S.mechanisms, S.fits, S.results.file, S.results.statOff.join(), S.results.sigma] : [0, 0, 0, 0, 0, 0, 0];
+  const deps = S ? [S.files, S.additions, S.mechanisms, S.fits, S.results.file, S.results.statOff.join(), S.results.sigma, S.results.bicSigma, S.trainOff.join()] : [0, 0, 0, 0, 0, 0, 0, 0, 0];
   return useMemo(() => {
     if (!S) return null;
     const fitted = sortedMechs(S).filter((m) => S.fits[m.name] && S.fits[m.name].rows.length);
@@ -900,8 +901,68 @@ function useResults(S) {
       }
       ftests = { ...F, ...P };
     }
-    return { file, curves, errors, missing, ftests, selection, fitted };
+    // model selection (BIC): every fitted model on all training files, the selected species, constants counted once
+    let bic = null;
+    const bicFiles = trainingFiles(S);
+    const bicText = String(S.results.bicSigma ?? "").trim();
+    const bicSigma = bicText === "" ? null : Number(bicText);
+    if (selection.length && bicFiles.length && (bicSigma === null || (Number.isFinite(bicSigma) && bicSigma > 0))) {
+      const entries = fitted.map((m) => {
+        const perSpecies = {};
+        for (const f of bicFiles) {
+          const sim = f.id === file.id ? curves[m.name] : simulateFile(S, m, f, S.fits[m.name], false);
+          if (sim.failed) return { name: m.name, k: m.k_to_fit.length, problem: `the simulation failed on ${f.name}`, bic: NaN };
+          for (const sp of selection) {
+            if (!f.table.columns.includes(sp)) continue;
+            if (!(sp in sim.atData)) return { name: m.name, k: m.k_to_fit.length, problem: `has no ${sp}`, bic: NaN };
+            const d = f.table.data[sp], y = sim.atData[sp];
+            const acc = perSpecies[sp] || (perSpecies[sp] = { sse: 0, n: 0 });
+            for (let i = 0; i < d.length; i++) if (!Number.isNaN(d[i]) && Number.isFinite(y[i])) { acc.sse += (d[i] - y[i]) ** 2; acc.n++; }
+          }
+        }
+        return { name: m.name, perSpecies, ...E.bicFromResiduals(perSpecies, m.k_to_fit.length, bicSigma) };
+      });
+      bic = { files: bicFiles.map((f) => f.name), species: selection, sigma: bicSigma, models: E.compareBic(entries) };
+    }
+    return { file, curves, errors, missing, ftests, selection, fitted, bic };
   }, deps);
+}
+
+/** model_selection.json: the BIC table as numbers. */
+function modelSelectionJson(bic) {
+  if (!bic) return null;
+  return {
+    method: "BIC = k ln N - 2 ln L; " + (bic.sigma === null ? "noise estimated per species from the residuals (sigma_s^2 = SSE_s/n_s)" : `known noise sigma = ${bic.sigma}`),
+    files: bic.files, species: bic.species,
+    models: Object.fromEntries(bic.models.map((m) => [m.name, m.problem ? { error: m.problem } : {
+      k: m.k, N: m.N, sse: Object.fromEntries(Object.entries(m.perSpecies).map(([sp, v]) => [sp, v.sse])), ln_likelihood: m.lnL, bic: m.bic, delta_bic: m.delta, weight: m.weight, evidence_against: m.evidence,
+    }])),
+  };
+}
+
+function BicTable({ R, S, act, current }) {
+  const bic = R.bic;
+  const text = S.results.bicSigma ?? "";
+  const bad = String(text).trim() !== "" && !(Number(text) > 0);
+  const pct = (w) => (!Number.isFinite(w) ? "" : w < 0.001 ? "<0.1%" : `${(100 * w).toFixed(1)}%`);
+  const usable = bic ? bic.models.filter((m) => !m.problem) : [];
+  return html`
+    <div class="row" style=${{ alignItems: "end" }}>
+      <div style=${{ flex: "1 1 240px", display: "grid", gap: "2px" }}>
+        <div class="eyebrow">Model selection (BIC)</div>
+        <span class="small muted">${bic ? `${bic.files.join(", ")} · ${bic.species.join(", ")} · lower BIC wins` : ""}</span>
+      </div>
+      <label class="field" style=${{ width: "150px" }}><span>Noise σ</span><input id="res-bic-sigma" class=${"input mono" + (bad ? " invalid" : "")} inputmode="decimal" placeholder="estimate" value=${text} onInput=${(e) => act.setResults({ bicSigma: e.target.value })} /></label>
+    </div>
+    ${bad ? html`<div class="note bad">Noise σ must be a number above 0, or empty to estimate it from the residuals.</div>`
+    : !bic ? html`<div class="note">Pick at least one training file on the Model tab.</div>` : html`
+    <div class="tablewrap"><table>
+      <thead><tr><th>Model</th><th class="n">constants k</th><th class="n">data points N</th><th class="n">ln L</th><th class="n">BIC</th><th class="n">ΔBIC</th><th class="n">weight</th><th>evidence against</th></tr></thead>
+      <tbody>${bic.models.map((m) => m.problem ? html`<tr key=${m.name}><td>${m.name}</td><td colspan="7" class="muted">${m.problem}</td></tr>`
+        : html`<tr key=${m.name} class=${m.evidence === "best" ? "best" : ""}><td>${m.name}</td><td class="n">${m.k}</td><td class="n">${m.N}</td><td class="n">${m.lnL.toFixed(1)}</td><td class="n">${m.bic.toFixed(1)}</td><td class="n">${m.delta.toFixed(1)}</td><td class="n">${pct(m.weight)}</td>
+          <td>${m.evidence === "best" ? html`<span class="pill good">lowest BIC</span>` : m.evidence}</td></tr>`)}</tbody>
+    </table></div>
+    <div class="small muted">BIC = k·ln N − 2·ln L over every data point of the training files, each mechanism's constants counted once. ${bic.sigma === null ? "The noise of each species is estimated from its residuals, so BIC ≈ Σ n·ln(SSE/n) + k·ln N: an extra step pays for itself only if it lowers the SSE enough." : `Noise fixed at σ = ${bic.sigma} for every species (same units as the data); a σ far above the real noise makes BIC favour the fewest constants.`} ΔBIC 0–2: weak, 2–6: positive, 6–10: strong, over 10: very strong evidence against that mechanism. ${usable.length < 2 ? "Fit a second mechanism to compare." : ""}</div>`}`;
 }
 
 function ResultsTab({ S, act, tick, R }) {
@@ -943,7 +1004,7 @@ function ResultsView({ S, act, tick, R, fitted }) {
   const layout = useMemo(() => baseLayout(t, { uirevision: file.id + model.name }), [t, file.id, model.name]);
   const pdict = Object.fromEntries(Object.entries(model.k_dict).map(([k, v]) => [k, { fixed: v.includes("$"), value: fit.rows[0].k[k] ?? Number(v.replace("$", "")) }]));
   const ftKeys = R.ftests ? Object.keys(R.ftests).filter((k) => !k.startsWith("p_")) : [];
-  const metricRows = [["sse", "SSE"], ["r2", "R²"], ["r2_adj", "adj. R²"], ["chi2", "χ²"], ["red_chi2", "reduced χ²"], ["bic", "BIC"], ["ll", "log-likelihood"]];
+  const metricRows = [["sse", "SSE"], ["r2", "R²"], ["r2_adj", "adj. R²"], ["chi2", "χ²"], ["red_chi2", "reduced χ²"]];
   const keys = fit.keys || Object.keys(fit.rows[0].k);
   return html`<div class="bench results">
     <div class="col">
@@ -982,11 +1043,15 @@ function ResultsView({ S, act, tick, R, fitted }) {
         </div>
       </section>
       <section class="panel">
-        <div class="panel-h"><h2>Statistics</h2><span class="hint">on ${file.name}, all fitted models</span><span class="spacer"></span>
-          <label class="field" style=${{ width: "120px" }}><span>Normalized σ</span><input id="res-sigma" class="input mono" inputmode="decimal" value=${S.results.sigma} onInput=${(e) => act.setResults({ sigma: e.target.value })} /></label></div>
+        <div class="panel-h"><h2>Statistics</h2><span class="hint">all fitted models</span></div>
         <div class="panel-b">
           <div class="chips">${dataSpecies(file.table).map((s) => html`<${Chip} key=${s} label=${s} color=${color(s)} on=${!S.results.statOff.includes(s)} onToggle=${() => act.setResults({ statOff: S.results.statOff.includes(s) ? S.results.statOff.filter((x) => x !== s) : [...S.results.statOff, s] })} />`)}</div>
           ${!R.selection.length ? html`<div class="note">Pick at least one species.</div>` : html`
+          <${BicTable} R=${R} S=${S} act=${act} current=${model.name} />
+          <div class="row" style=${{ alignItems: "end", marginTop: "6px" }}>
+            <div class="eyebrow" style=${{ flex: "1 1 200px" }}>Fit statistics on ${file.name}</div>
+            <label class="field" style=${{ width: "120px" }}><span>σ for χ²</span><input id="res-sigma" class="input mono" inputmode="decimal" value=${S.results.sigma} onInput=${(e) => act.setResults({ sigma: e.target.value })} /></label>
+          </div>
           <div class="tablewrap"><table>
             <thead><tr><th>Model</th>${metricRows.map(([, l]) => html`<th class="n">${l}</th>`)}</tr></thead>
             <tbody>${R.fitted.map((m) => R.errors[m.name] ? html`<tr key=${m.name} class=${m.name === model.name ? "best" : ""}><td>${m.name}</td>${metricRows.map(([k]) => html`<td class="n" title=${R.selection.map((s) => `${s}: ${E.formatSci(R.errors[m.name][k][s])}`).join("\n")}>${E.formatSci(R.errors[m.name][k].total)}</td>`)}</tr>`
@@ -998,7 +1063,7 @@ function ResultsView({ S, act, tick, R, fitted }) {
               <tbody>${R.fitted.filter((m) => R.errors[m.name]).flatMap((m) => R.selection.map((s) => html`<tr key=${m.name + s}><td>${m.name}</td><td>${s}</td>${metricRows.map(([k]) => html`<td class="n">${E.formatSci(R.errors[m.name][k][s])}</td>`)}</tr>`))}</tbody>
             </table></div>
           </details>
-          <div class="small muted">Totals add up the species, as the desktop GUI does (so R² totals can exceed 1). Hover a total for the per-species values.</div>
+          <div class="small muted">Totals add up the species, as the desktop GUI does (so R² totals can exceed 1). Hover a total for the per-species values. SSE always falls when a mechanism gains steps, so use the BIC above, not SSE, to choose between mechanisms with different numbers of constants.</div>
           <div class="eyebrow">F-test against “base”</div>
           ${!R.fitted.some((m) => m.name === "base") ? html`<div class="note">Name a fitted mechanism “base” to compare the others with it.</div>`
             : !ftKeys.length ? html`<div class="note">Fit a second mechanism to compare it with base.</div>`
@@ -1023,6 +1088,7 @@ function ResultsView({ S, act, tick, R, fitted }) {
             <button class="btn small" onClick=${() => act.save(`${model.name}_data.csv`, curveCsv(curve))}>Model curve (${model.name}_data.csv)</button>
             <button class="btn small" disabled=${!Object.keys(R.errors).length} onClick=${() => act.save("errors.json", JSON.stringify(R.errors, null, 4))}>errors.json</button>
             <button class="btn small" disabled=${!R.ftests || !ftKeys.length} onClick=${() => act.save("F_tests.json", JSON.stringify(R.ftests, null, 4))}>F_tests.json</button>
+            <button class="btn small" disabled=${!R.bic} onClick=${() => act.save("model_selection.json", JSON.stringify(modelSelectionJson(R.bic), null, 4))}>model_selection.json</button>
           </div>
         </div>
       </section>
@@ -1304,7 +1370,7 @@ function App() {
     async saveSession() {
       try {
         const S = cur();
-        const info = R ? { curves: R.curves, errors: Object.keys(R.errors).length ? R.errors : null, ftests: R.ftests } : null;
+        const info = R ? { curves: R.curves, errors: Object.keys(R.errors).length ? R.errors : null, ftests: R.ftests, modelSelection: modelSelectionJson(R.bic) } : null;
         const { blob, name } = await buildSessionZip(S, info);
         await saveFile(name, blob, toast);
       } catch (e) { toast(`Could not build the session zip: ${e.message}`, "bad"); }

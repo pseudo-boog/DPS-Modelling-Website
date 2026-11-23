@@ -89,12 +89,7 @@ for (const m of mechs) {
   const met = E.getMetrics(yData, models[m.name], m.k_to_fit.length, 0.1, toMatch);
   let worst = 0, w = "";
   for (const [metric, vals] of Object.entries(errRef[m.name])) for (const [s, v] of Object.entries(vals)) {
-    if (metric === "aic") { // the web version reports BIC; check it from the GUI's log-likelihood instead
-      const ll = errRef[m.name].ll[s], n = exp1.nrows, k = m.k_to_fit.length;
-      const want = s === "total" ? Object.entries(errRef[m.name].ll).filter(([x]) => x !== "total").reduce((a, [, l]) => a + k * Math.log(n) - 2 * l, 0) : k * Math.log(n) - 2 * ll;
-      const d = rel(met.bic[s], want); if (d > worst) { worst = d; w = `bic.${s} ${met.bic[s]} vs ${want}`; }
-      continue;
-    }
+    if (metric === "aic") continue; // the web version replaces AIC with the model-selection BIC (section 5)
     const d = rel(met[metric][s], v); if (d > worst) { worst = d; w = `${metric}.${s} ${met[metric][s]} vs ${v}`; }
   }
   check(`errors.json ${m.name} (from roadrunner curves)`, worst < 1e-9, `worst ${worst.toExponential(2)} ${w}`);
@@ -104,5 +99,38 @@ let worstF = 0;
 for (const [k, v] of Object.entries(fRef.Inhibition)) worstF = Math.max(worstF, rel(ft.F[k], v));
 for (const [k, v] of Object.entries(fRef.p_Inhibition)) worstF = Math.max(worstF, Math.abs(ft.p[k] - v));
 check("F_tests.json", worstF < 1e-7, `worst ${worstF.toExponential(2)} ${JSON.stringify(ft)}`);
+
+// 5. model-selection BIC over both experiments, each mechanism simulated with its own best k's
+// (the web app's Results tab does the same): noise estimated per species, constants counted once
+const perSp = {};
+for (const m of mechs) {
+  const prob = E.buildProblem(m, files, reAdds, toMatch);
+  const sims = E.simulateProblem(prob, prob.paramNames.map((k, i) => (k in bestK[m.name] ? bestK[m.name][k] : prob.values[i])));
+  perSp[m.name] = {};
+  files.forEach((f, fi) => {
+    for (const s of toMatch) {
+      const acc = perSp[m.name][s] || (perSp[m.name][s] = { sse: 0, n: 0 });
+      f.table.data[s].forEach((d, i) => { const y = sims[fi][s][i]; if (!Number.isNaN(d) && Number.isFinite(y)) { acc.sse += (d - y) ** 2; acc.n++; } });
+    }
+  });
+}
+const byHand = (ps, k, sigma) => {
+  const vals = Object.values(ps), N = vals.reduce((a, v) => a + v.n, 0);
+  const m2lnL = vals.reduce((a, { sse, n }) => a + (sigma == null ? n * (Math.log(2 * Math.PI * sse / n) + 1) : n * Math.log(2 * Math.PI * sigma * sigma) + sse / (sigma * sigma)), 0);
+  return k * Math.log(N) + m2lnL;
+};
+let worstB = 0;
+for (const m of mechs) for (const sg of [null, 0.1, 0.001]) worstB = Math.max(worstB, rel(E.bicFromResiduals(perSp[m.name], m.k_to_fit.length, sg).bic, byHand(perSp[m.name], m.k_to_fit.length, sg)));
+check("bicFromResiduals vs the formula", worstB < 1e-12, `worst ${worstB.toExponential(2)}`);
+const cmp = (sg) => E.compareBic(mechs.map((m) => ({ name: m.name, ...E.bicFromResiduals(perSp[m.name], m.k_to_fit.length, sg) })));
+const est = cmp(null), big = cmp(0.1);
+const bestOf = (rows) => rows.find((r) => r.delta === 0).name;
+console.log("   BIC (σ estimated):", est.map((r) => `${r.name} k=${r.k} BIC=${r.bic.toFixed(1)} Δ=${r.delta.toFixed(1)} w=${r.weight.toPrecision(3)} ${r.evidence}`).join(" | "));
+check("BIC with estimated noise prefers Inhibition", bestOf(est) === "Inhibition" && est.find((r) => r.name === "base").evidence === "very strong", JSON.stringify(est.map((r) => [r.name, r.delta])));
+check("BIC with σ = 0.1 (far above the noise) falls back to base", bestOf(big) === "base");
+check("BIC weights sum to 1", Math.abs(est.reduce((a, r) => a + r.weight, 0) - 1) < 1e-12);
+check("BIC evidence labels", ["best", "weak", "positive", "strong", "very strong"].join() === [0, 1.9, 2, 6, 10].map(E.bicEvidence).join(), [0, 1.9, 2, 6, 10].map(E.bicEvidence).join());
+const withBad = E.compareBic([{ name: "a", bic: 5 }, { name: "b", bic: NaN, problem: "x" }, { name: "c", bic: 9 }]);
+check("compareBic skips failed models", withBad[0].delta === 0 && Number.isNaN(withBad[1].delta) && Math.abs(withBad[2].weight - Math.exp(-2) / (1 + Math.exp(-2))) < 1e-12, JSON.stringify(withBad));
 console.log(`\n${fails ? fails + " FAILED" : "ALL PASS"}`);
 process.exit(fails ? 1 : 0);

@@ -902,13 +902,13 @@ const nanSum = (a) => a.reduce((s, v) => (Number.isNaN(v) ? s : s + v), 0);
 const nanMean = (a) => { let s = 0, c = 0; for (const v of a) if (!Number.isNaN(v)) { s += v; c++; } return c ? s / c : NaN; };
 
 /**
- * get_metrics(): per-species and total SSE, R2, adjusted R2, chi2, reduced chi2, BIC, log-likelihood.
- * BIC = k ln(n) - 2 ln L replaces the desktop GUI's AIC (2k - 2 ln L), with the same k, n and ln L.
+ * get_metrics(): per-species and total SSE, R2, adjusted R2, chi2, reduced chi2 and the desktop GUI's
+ * log-likelihood (with the fixed "normalized sigma") for one file. Model selection uses bicFromResiduals().
  */
 export function getMetrics(yData, yModel, nParams, sigma, selection) {
   for (const s of selection) if (!(s in yModel) || !(s in yData)) return null; // pandas KeyError -> None
   const n = yData[selection[0]] ? yData[selection[0]].length : 0;
-  const out = { sse: {}, r2: {}, r2_adj: {}, chi2: {}, red_chi2: {}, bic: {}, ll: {} };
+  const out = { sse: {}, r2: {}, r2_adj: {}, chi2: {}, red_chi2: {}, ll: {} };
   for (const s of selection) {
     const d = yData[s], m = yModel[s];
     const res = d.map((v, i) => v - m[i]);
@@ -921,10 +921,51 @@ export function getMetrics(yData, yModel, nParams, sigma, selection) {
     const chi2 = nanSum(res.map((r) => (r / sigma) ** 2));
     const red = chi2 / (n - nParams);
     const ll = -0.5 * n * Math.log(2 * Math.PI * sigma * sigma) - sse / (2 * sigma * sigma);
-    Object.assign(out.sse, { [s]: sse }); out.r2[s] = r2; out.r2_adj[s] = r2adj; out.chi2[s] = chi2; out.red_chi2[s] = red; out.ll[s] = ll; out.bic[s] = nParams * Math.log(n) - 2 * ll;
+    Object.assign(out.sse, { [s]: sse }); out.r2[s] = r2; out.r2_adj[s] = r2adj; out.chi2[s] = chi2; out.red_chi2[s] = red; out.ll[s] = ll;
   }
   for (const k of Object.keys(out)) out[k].total = nanSum(Object.values(out[k]));
   return out;
+}
+
+/**
+ * BIC of a least-squares fit, for choosing between mechanisms.
+ * perSpecies: {species: {sse, n}} summed over every data point the models are compared on (all files);
+ * k: number of fitted constants (counted once). sigma: null -> each species' noise is estimated from its
+ * residuals (maximum likelihood, sigma_s^2 = SSE_s / n_s); a number -> known measurement error, same units as the data.
+ *   ln L = sum_s [ -(n_s/2) ln(2 pi sigma_s^2) - SSE_s / (2 sigma_s^2) ],  BIC = k ln N - 2 ln L,  N = sum_s n_s.
+ * With estimated noise this is sum_s n_s ln(SSE_s/n_s) + k ln N + constant: a better fit only wins if it lowers
+ * the SSE by more than the extra constants cost.
+ */
+export function bicFromResiduals(perSpecies, k, sigma = null) {
+  let N = 0, lnL = 0;
+  for (const { sse, n } of Object.values(perSpecies)) {
+    if (!n) continue;
+    N += n;
+    if (sigma === null) {
+      const s2 = Math.max(sse / n, 1e-300); // MLE of the noise variance
+      lnL += -0.5 * n * (Math.log(2 * Math.PI * s2) + 1);
+    } else {
+      lnL += -0.5 * n * Math.log(2 * Math.PI * sigma * sigma) - sse / (2 * sigma * sigma);
+    }
+  }
+  return { N, k, lnL, bic: k * Math.log(N) - 2 * lnL };
+}
+
+/** Kass & Raftery (1995) wording for the evidence against a model whose BIC is `delta` above the best. */
+export function bicEvidence(delta) {
+  if (delta <= 0) return "best";
+  if (delta < 2) return "weak";
+  if (delta < 6) return "positive";
+  if (delta < 10) return "strong";
+  return "very strong";
+}
+
+/** Adds delta (BIC - lowest BIC), weight (exp(-delta/2), normalised) and evidence to each {bic} entry. */
+export function compareBic(entries) {
+  const ok = entries.filter((e) => Number.isFinite(e.bic));
+  const min = Math.min(...ok.map((e) => e.bic));
+  const z = ok.reduce((a, e) => a + Math.exp(-(e.bic - min) / 2), 0);
+  return entries.map((e) => Number.isFinite(e.bic) ? { ...e, delta: e.bic - min, weight: Math.exp(-(e.bic - min) / 2) / z, evidence: bicEvidence(e.bic - min) } : { ...e, delta: NaN, weight: NaN, evidence: "" });
 }
 
 /** f_test() per species and f_test_global(); model2 is the one with more parameters. */
